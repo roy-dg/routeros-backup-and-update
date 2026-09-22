@@ -111,10 +111,18 @@ async function handlePresign(request, env) {
 
   // The key is built from the AUTHENTICATED device_id, never from anything
   // client-supplied - a router can only ever get a presigned URL under its
-  // own prefix.
+  // own prefix. ext picks the file extension (backup or rsc) so the router
+  // can request a presigned URL for either its binary backup or its plain
+  // config export; unset ext defaults to "backup" for old callers.
+  const requestedExt = url.searchParams.get("ext") || "backup";
+  const allowedExts = ["backup", "rsc"];
+  if (!allowedExts.includes(requestedExt)) {
+    return new Response("Bad request: ext must be one of " + allowedExts.join(", "), { status: 400 });
+  }
+
   const safeDeviceId = creds.deviceId.replace(/[^a-zA-Z0-9._-]/g, "_");
   const now = new Date();
-  const key = `${safeDeviceId}/${now.toISOString().slice(0, 10)}/${now.getTime()}.backup`;
+  const key = `${safeDeviceId}/${now.toISOString().slice(0, 10)}/${now.getTime()}.${requestedExt}`;
   const ttl = Number(env.PRESIGN_TTL_SECONDS || PRESIGN_TTL_DEFAULT);
 
   const client = new AwsClient({
@@ -244,3 +252,4 @@ function timingSafeEqualHex(a, b) {
   }
   return diff === 0;
 }
+
