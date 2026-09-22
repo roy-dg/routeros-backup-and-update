@@ -81,7 +81,7 @@
 :local StatusPollAttempts           15;        # max number of 1s polls while waiting on check-for-updates
 
 # -- Cloudflare R2 backup (presigned URL via Worker) --
-:local R2PresignWorkerUrl           "https://your-worker.your-subdomain.workers.dev/presign";
+:local R2PresignWorkerUrl           "[YOUR_URL_HERE]";
 :local R2RouterSecretName           "R2_BACKUP_SECRET";  # THIS router's own credential, looked up via $SECRET - see setup notes above
 :local PresignTtlHint                120;      # informational only - actual TTL is enforced by the Worker
 :local BackupPasswordName           "";        # leave "" for an unencrypted backup, else a $SECRET name
@@ -161,12 +161,7 @@
 # ---- make sure the post-update RouterBOARD firmware task exists -------------
 :if ($AutoUpgradeRouterboard = true) do={
     :if ([:len [/system/scheduler/find name=$RouterboardSchedulerName]] = 0) do={
-        :local RbScript (
-            ":if ([/system/routerboard/get current-firmware] != [/system/routerboard/get upgrade-firmware]) do={" .
-            " :log info \"" . $RouterboardSchedulerName . ": new RouterBOARD firmware available, upgrading and rebooting.\";" .
-            " /system/routerboard/upgrade; :delay 3s; /system/reboot" .
-            "} else={ :log info \"" . $RouterboardSchedulerName . ": RouterBOARD firmware already up to date.\" }"
-        )
+        :local RbScript (":if ([/system/routerboard/get current-firmware] != [/system/routerboard/get upgrade-firmware]) do={" . " :log info \"" . $RouterboardSchedulerName . ": new RouterBOARD firmware available, upgrading and rebooting.\";" . " /system/routerboard/upgrade; :delay 3s; /system/reboot" . "} else={ :log info \"" . $RouterboardSchedulerName . ": RouterBOARD firmware already up to date.\" }")
         /system/scheduler/add name=$RouterboardSchedulerName start-time=startup on-event=$RbScript
         :log info ($LogPrefix . " created startup task \"" . $RouterboardSchedulerName . "\" for RouterBOARD firmware upgrades.")
     }
@@ -314,3 +309,4 @@
 } else={
     :log info ($LogPrefix . " nothing to do (" . $UpdStatus . ")")
 }
+
