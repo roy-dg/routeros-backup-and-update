@@ -1,0 +1,7 @@
+{
+  "name": "routeros-backup-presign",
+  "private": true,
+  "dependencies": {
+    "aws4fetch": "^1.0.20"
+  }
+}

@@ -1,0 +1,11 @@
+name = "routeros-backup-presign"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Not sensitive, so it can live here rather than as a secret.
+[vars]
+PRESIGN_TTL_SECONDS = "120"
+
+# Everything else (ROUTER_SHARED_SECRET, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME) is set with `wrangler secret put <NAME>`
+# so it never ends up in source control - see the setup notes in worker.js.
