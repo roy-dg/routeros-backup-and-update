@@ -1,4 +1,4 @@
-name = "routeros-backup-presign"
+name = "mt-backup"
 main = "worker.js"
 compatibility_date = "2024-11-01"
 
@@ -6,6 +6,16 @@ compatibility_date = "2024-11-01"
 [vars]
 PRESIGN_TTL_SECONDS = "120"
 
-# Everything else (ROUTER_SHARED_SECRET, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
-# R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME) is set with `wrangler secret put <NAME>`
-# so it never ends up in source control - see the setup notes in worker.js.
+# Create the database first (dashboard: Storage & databases > D1 > Create
+# database, or `wrangler d1 create routeros-backup-presign-db`), then paste
+# its database_id below. database_id is just an identifier, not a secret -
+# fine to commit.
+[[d1_databases]]
+binding = "DB"
+database_name = "mt-backup"
+database_id = "2dcd1287-55a2-4735-808c-94eff65cb64b"
+
+# Secrets - ADMIN_SECRET, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME - are set with `wrangler secret put
+# <NAME>` or the dashboard's Settings > Variables and Secrets, never here.
+

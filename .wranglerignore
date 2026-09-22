@@ -1,0 +1,5 @@
+# RouterOS scripts live in this repo for reference/version control, but
+# have nothing to do with the Worker bundle - keep them out of anything
+# wrangler deploys/publishes.
+*.rsc
+schema.sql
