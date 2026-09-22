@@ -55,6 +55,10 @@
 #     of these router-side limits apply. It still checks the bytes read for
 #     every chunk against the chunk size it asked for, and refuses to upload
 #     a short/empty chunk rather than silently sending one.
+#   * Each backup run also leaves a local "<identity>-latest.backup" and
+#     "<identity>-latest.rsc" on the router itself, overwritten every run -
+#     so there's a same-day local copy in addition to the dated one in R2.
+#     Set $DeleteLocalBackupAfterUpload=true to skip this and rely on R2 only.
 #   * The .rsc export deliberately does NOT use show-sensitive by default,
 #     so it will NOT contain the plaintext $SECRET-vault passwords - that's
 #     the same masking /ppp/secret gives you elsewhere, and a plaintext
@@ -101,7 +105,10 @@
 :local UploadChunkSize               32768;    # bytes per chunk - matches /file/read's own max chunk-size
 :local BackupPasswordName           "";        # leave "" for an unencrypted .backup, else a $SECRET name
 :local RequireBackupBeforeUpdate     true;     # if the backup/upload fails, skip installing this run
-:local DeleteLocalBackupAfterUpload  true;
+:local DeleteLocalBackupAfterUpload  false;    # false (default) = keep "<identity>-latest.backup/.rsc" on
+                                                # the router, overwritten each run, as a local copy alongside
+                                                # the dated R2 upload; true = delete right after a successful
+                                                # upload and rely on R2 only
 
 # -- RouterBOARD firmware --
 :local AutoUpgradeRouterboard       true;
@@ -234,9 +241,14 @@
     }
 
     :local today [/system/clock/get date]
+    # baseName is dated and only ever used for the R2 object key, so every
+    # day's upload lands at its own path server-side. The local files below
+    # instead use a fixed "latest" name so the router overwrites its own
+    # on-disk copy each run rather than accumulating one per day.
     :local baseName ($identity . "-" . $today)
-    :local backupFile ($baseName . ".backup")
-    :local rscFile ($baseName . ".rsc")
+    :local localName ($identity . "-latest")
+    :local backupFile ($localName . ".backup")
+    :local rscFile ($localName . ".rsc")
 
     :local backupOk false
     :local rscOk false
@@ -244,9 +256,9 @@
     # -------- binary backup --------
     :do {
         :if ($backupPassword != "") do={
-            /system/backup/save name=$baseName password=$backupPassword
+            /system/backup/save name=$localName password=$backupPassword
         } else={
-            /system/backup/save name=$baseName dont-encrypt=yes
+            /system/backup/save name=$localName dont-encrypt=yes
         }
 
         :set backupOk [$UploadFileInChunks fileName=$backupFile ext="backup" baseName=$baseName chunkSize=$chunkSize \
@@ -261,9 +273,9 @@
     # -------- plain-text config export --------
     :do {
         :if ($showSensitive = true) do={
-            /export terse show-sensitive file=$baseName
+            /export terse show-sensitive file=$localName
         } else={
-            /export terse file=$baseName
+            /export terse file=$localName
         }
 
         :set rscOk [$UploadFileInChunks fileName=$rscFile ext="rsc" baseName=$baseName chunkSize=$chunkSize \
