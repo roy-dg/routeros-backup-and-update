@@ -6,15 +6,17 @@ credentials. Each router has its own revocable identity, tracked in D1.
 
 ## How it works
 
-1. The router sends `GET /presign` with header
-   `X-Router-Auth: <device_id>:<secret>`.
+1. The router sends `GET /presign?ext=<backup|rsc>` with header
+   `X-Router-Auth: <device_id>:<secret>`. `ext` picks the file extension
+   for the object key - `backup` (default, if omitted) for a binary
+   `/system/backup/save`, or `rsc` for a plain-text `/export`.
 2. The Worker looks up `device_id` in D1, checks it isn't disabled, and
    verifies the secret against its stored hash.
 3. It asks R2's S3-compatible API to sign a short-lived `PUT` URL for a
-   fresh object key (`<device_id>/<date>/<ts>.backup`).
+   fresh object key (`<device_id>/<date>/<ts>.<ext>`).
 4. It returns `{ "url": "...", "key": "...", "expiresIn": 120 }`.
-5. The router `PUT`s the backup bytes straight to that URL. R2 never sees
-   the router's secret, and the Worker never sees the backup bytes.
+5. The router `PUT`s the file's bytes straight to that URL. R2 never sees
+   the router's secret, and the Worker never sees the file's contents.
 
 A presigned URL can't be revoked early - disabling a router in D1 blocks
 new presigns immediately, but a URL already handed out keeps working until
@@ -107,13 +109,21 @@ run:
    doesn't expose a release date. If the changelog can't be fetched or
    parsed, the script fails safe and skips installing that run rather than
    guessing.
-3. **Takes a backup before doing anything else.** Once a release clears the
-   age threshold, the router creates a local backup, reads it into a
-   variable, and uploads it straight to Cloudflare R2 using a short-lived
-   presigned PUT URL obtained from this repo's Worker (see "How it works"
-   above). By default (`RequireBackupBeforeUpdate=true`), the update is
-   skipped for that run if the backup or upload fails - the router only
-   updates once a good backup is confirmed on R2.
+3. **Backs up before doing anything else.** By default, a backup only
+   happens right before installing an update; set `$AlwaysBackup=true` to
+   also back up (and upload) on every run, update or not, so there's
+   always a recent backup on R2. Each backup run creates and uploads
+   *both* a binary `.backup` (full config, restorable in one step) and a
+   plain-text `.rsc` export (`/export`, easy to read/diff), each via its
+   own short-lived presigned PUT URL from this repo's Worker (see "How it
+   works" above). The `.rsc` export masks `$SECRET`-vault passwords by
+   default - set `$ExportShowSensitive=true` only if you understand and
+   accept a plaintext-secrets export. Before uploading either file, the
+   script re-checks that the bytes it read back match the file's actual
+   size, and refuses to upload if they don't - RouterOS can silently
+   return a short/empty read for a file above some undocumented size
+   instead of erroring. By default (`RequireBackupBeforeUpdate=true`), an
+   update is skipped for that run unless both files uploaded successfully.
 4. **Installs the update.** `/system/package/update/install` reboots the
    router automatically once the download finishes.
 5. **Upgrades RouterBOARD firmware after reboot, if needed.** The script
