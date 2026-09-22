@@ -6,17 +6,37 @@ credentials. Each router has its own revocable identity, tracked in D1.
 
 ## How it works
 
-1. The router sends `GET /presign?ext=<backup|rsc>` with header
-   `X-Router-Auth: <device_id>:<secret>`. `ext` picks the file extension
-   for the object key - `backup` (default, if omitted) for a binary
-   `/system/backup/save`, or `rsc` for a plain-text `/export`.
+RouterOS's `/tool fetch` can only ever hand a file to an HTTP PUT by first
+reading it into a script variable - and both that read and the PUT body are
+hard-capped at tens of KB (see the companion `.rsc` script's header for the
+exact limits). So files are uploaded in small chunks, each its own
+temporary R2 object, and reassembled by the Worker where none of those
+router-side limits apply:
+
+1. For each chunk, the router sends `GET /presign?ext=<backup|rsc>&base=<name>&part=<n>`
+   with header `X-Router-Auth: <device_id>:<secret>`. `ext` picks the file
+   extension, `base` names the file (matches the router's own local
+   basename), and `part` is that chunk's zero-based index.
 2. The Worker looks up `device_id` in D1, checks it isn't disabled, and
    verifies the secret against its stored hash.
 3. It asks R2's S3-compatible API to sign a short-lived `PUT` URL for a
-   fresh object key (`<device_id>/<date>/<ts>.<ext>`).
+   temporary part object (`<device_id>/<date>/<base>.<ext>/parts/<n>`).
 4. It returns `{ "url": "...", "key": "...", "expiresIn": 120 }`.
-5. The router `PUT`s the file's bytes straight to that URL. R2 never sees
-   the router's secret, and the Worker never sees the file's contents.
+5. The router `PUT`s that one chunk's bytes straight to that URL, and
+   repeats steps 1-5 for every remaining chunk - one presign per chunk,
+   requested right before it's needed, so a slow multi-chunk upload can
+   never outlive `PRESIGN_TTL_SECONDS`.
+6. Once every chunk has uploaded, the router sends
+   `POST /finalize {"ext", "base", "parts": <count>}`. The Worker checks
+   every expected part object actually exists (never assembling a
+   truncated file), streams them together in order into the final object
+   at `<device_id>/<date>/<base>.<ext>`, and best-effort deletes the parts.
+
+R2 never sees the router's secret, and the Worker never sees a chunk's
+contents at PUT time (only when it reassembles them, entirely inside
+Cloudflare). An R2 lifecycle rule on the `.../parts/` prefix (set this up
+once in the dashboard) cleans up any leftover parts from a run that died
+before calling `/finalize`.
 
 A presigned URL can't be revoked early - disabling a router in D1 blocks
 new presigns immediately, but a URL already handed out keeps working until
@@ -73,8 +93,17 @@ wrangler deploy
 ```
 
 `PRESIGN_TTL_SECONDS` is not sensitive, so it's set as a plain var in
-`wrangler.toml` (defaults to `120`). The D1 `database_id` is likewise not
-sensitive and is fine to commit.
+`wrangler.toml` (defaults to `120`). The D1 `database_id`, and the
+`[[r2_buckets]]` `bucket_name` used by `/finalize`, are likewise not
+sensitive and are fine to commit - just fill in your actual bucket name
+(same bucket as the `R2_BUCKET_NAME` secret) before deploying.
+
+Finally, add an R2 lifecycle rule on your bucket (dashboard: your bucket >
+Settings > Object lifecycle rules) that deletes objects under the
+`parts/` path segment after a day or so. That's the backstop for temporary
+chunk objects left behind by a run that fails before calling `/finalize` -
+harmless either way, since `/finalize` only ever assembles from parts it
+confirms exist, but there's no reason to keep them around.
 
 ## Requirements
 
@@ -114,16 +143,17 @@ run:
    also back up (and upload) on every run, update or not, so there's
    always a recent backup on R2. Each backup run creates and uploads
    *both* a binary `.backup` (full config, restorable in one step) and a
-   plain-text `.rsc` export (`/export`, easy to read/diff), each via its
-   own short-lived presigned PUT URL from this repo's Worker (see "How it
-   works" above). The `.rsc` export masks `$SECRET`-vault passwords by
-   default - set `$ExportShowSensitive=true` only if you understand and
-   accept a plaintext-secrets export. Before uploading either file, the
-   script re-checks that the bytes it read back match the file's actual
-   size, and refuses to upload if they don't - RouterOS can silently
-   return a short/empty read for a file above some undocumented size
-   instead of erroring. By default (`RequireBackupBeforeUpdate=true`), an
-   update is skipped for that run unless both files uploaded successfully.
+   plain-text `.rsc` export (`/export`, easy to read/diff), each uploaded
+   in small chunks via this repo's Worker (see "How it works" above) so
+   file size is never limited by RouterOS's own read/PUT-body ceilings.
+   The `.rsc` export masks `$SECRET`-vault passwords by default - set
+   `$ExportShowSensitive=true` only if you understand and accept a
+   plaintext-secrets export. Every chunk's read is re-checked against the
+   chunk size the script asked for, and the Worker re-checks every part
+   object exists before assembling the final file, so a short/empty read
+   or a chunk that never arrives never silently produces a truncated
+   backup. By default (`RequireBackupBeforeUpdate=true`), an update is
+   skipped for that run unless both files uploaded successfully.
 4. **Installs the update.** `/system/package/update/install` reboots the
    router automatically once the download finishes.
 5. **Upgrades RouterBOARD firmware after reboot, if needed.** The script

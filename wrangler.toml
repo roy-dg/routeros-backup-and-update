@@ -15,6 +15,15 @@ binding = "DB"
 database_name = "mt-backup"
 database_id = "2dcd1287-55a2-4735-808c-94eff65cb64b"
 
+# Lets the Worker read/write/delete objects directly (used by /finalize to
+# reassemble chunked uploads) - separate from the R2_ACCESS_KEY_ID/
+# R2_SECRET_ACCESS_KEY secrets below, which are only used to presign PUT
+# URLs for the router. bucket_name is the same bucket as the R2_BUCKET_NAME
+# secret and, like database_id above, isn't sensitive - fine to commit.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "[BUCKET NAME HERE]"
+
 # Secrets - ADMIN_SECRET, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
 # R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME - are set with `wrangler secret put
 # <NAME>` or the dashboard's Settings > Variables and Secrets, never here.
