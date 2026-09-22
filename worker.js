@@ -82,6 +82,8 @@ async function handlePresign(request, env) {
     return new Response("Method not allowed", { status: 405 });
   }
 
+  const url = new URL(request.url);
+
   const creds = parseRouterAuth(request);
   if (!creds) {
     return new Response("Unauthorized", { status: 401 });

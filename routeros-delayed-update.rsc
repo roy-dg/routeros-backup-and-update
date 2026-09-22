@@ -1,29 +1,31 @@
 #!rsc by RouterOS
 # =============================================================================
 # RouterOS 7.x - Delayed RouterOS Update Installer
-#   + pre-update backup to Cloudflare R2 (via a presigned-URL Worker)
+#   + backup to Cloudflare R2 (via a presigned-URL Worker) - both a binary
+#     .backup and a plain-text .rsc export, on a schedule you control
 #   + post-update RouterBOARD firmware upgrade
 #   + secrets kept out of this script's text via a /ppp secret-backed vault
 #
 # Checks for a RouterOS update on the configured release channel and installs
 # it ONLY once that release has been publicly available for at least
-# $MinDaysSinceRelease days. Immediately before installing, it takes a backup
-# and uploads it to Cloudflare R2 using a short-lived presigned PUT URL that
-# a small Cloudflare Worker hands out. After a RouterOS install (which
-# reboots the router), a self-provisioned startup task upgrades the
-# RouterBOARD firmware if a new one shipped with the package, then reboots
-# once more to apply it.
+# $MinDaysSinceRelease days. By default a backup only happens immediately
+# before installing; set $AlwaysBackup=true to back up (and upload) on every
+# run instead, so there's always a recent backup even on days nothing gets
+# installed. After a RouterOS install (which reboots the router), a
+# self-provisioned startup task upgrades the RouterBOARD firmware if a new
+# one shipped with the package, then reboots once more to apply it.
 #
-# COMPANION FILES: worker.js + wrangler.toml (deploy these to Cloudflare
-# first - see the setup notes below and in worker.js).
+# COMPANION FILES: worker.js + wrangler.toml (deploy to Cloudflare first -
+# see worker.js). worker.js MUST be the version that understands the ?ext=
+# query param (backup|rsc) - an older deployed Worker will still accept the
+# .rsc upload, it'll just mislabel it with a .backup-extension key in R2.
 #
 # SECRETS
 #   Nothing sensitive is hardcoded here. This script gets secrets from the
 #   shared $SECRET vault defined in the companion script secret-vault.rsc -
 #   deploy and schedule that FIRST (see its header for setup). This router
 #   also needs its OWN credential registered with the Worker before it can
-#   back anything up - each router now has its own secret, not a shared one
-#   (see worker.js for why, and how to revoke just one router if needed).
+#   back anything up - each router has its own secret, not a shared one.
 #   From another machine (not this router):
 #     curl -X POST https://<worker-url>/admin/routers \
 #       -H "Authorization: Bearer <ADMIN_SECRET>" -H "Content-Type: application/json" \
@@ -40,20 +42,30 @@
 #     candidate version. If it can't be fetched/parsed, the script fails
 #     safe and skips installing.
 #   * RouterOS cannot stream an arbitrary-size local file into an HTTPS PUT
-#     body - the file has to be read into a script variable first, and that
-#     read is undocumented/capped at roughly 60-64KB in practice (MikroTik
-#     has stated there's no supported way to read a larger file this way).
-#     $MaxBackupBytes guards against this: if the backup is bigger, the
-#     script logs an error and skips the update run rather than sending a
-#     truncated backup. If your backups routinely exceed this, this
-#     presigned-URL approach is the wrong transport for you - a native
-#     (S)FTP upload (RouterOS streams straight from disk for that, no size
-#     cap) to something like an `rclone serve sftp` bridge in front of R2
-#     would be the robust alternative.
+#     body - each file has to be read into a script variable first, and on
+#     at least some RouterOS versions/devices that read silently returns 0
+#     bytes above some undocumented size, with no error - see the empirical
+#     test in the chat history that found this on this exact router. This
+#     script does NOT guess a safe byte ceiling; instead it checks the
+#     actual bytes read against the file's real size right after the read,
+#     and refuses to upload if they don't match (rather than silently
+#     sending a short/empty file that would report "success"). If you hit
+#     this in practice, the real fix is a different transport for that file
+#     - RouterOS streams straight from disk for an (S)FTP upload, with no
+#     variable involved and no size ceiling at all (e.g. an `rclone serve
+#     sftp` bridge in front of R2), unlike this presigned-URL-over-HTTP
+#     approach.
+#   * The .rsc export deliberately does NOT use show-sensitive by default,
+#     so it will NOT contain the plaintext $SECRET-vault passwords - that's
+#     the same masking /ppp/secret gives you elsewhere, and a plaintext
+#     export would otherwise undo it. Set $ExportShowSensitive=true only if
+#     you understand and accept that tradeoff. The binary .backup always
+#     contains full recoverable config regardless (encrypt it with
+#     $BackupPasswordName if that concerns you).
 #   * A presigned URL can't be "revoked" early once issued - so the Worker
 #     keeps it valid only for $PresignTtlHint seconds (must match the
-#     Worker's own PRESIGN_TTL_SECONDS). Separately, each router now has its
-#     own credential in the Worker's D1 database, so if THIS router is
+#     Worker's own PRESIGN_TTL_SECONDS). Separately, each router has its own
+#     credential in the Worker's D1 database, so if THIS router is
 #     compromised, disabling just its row (POST /admin/routers/<id>/disable)
 #     stops it getting any NEW presigned URLs, without touching other
 #     routers or rotating anything shared.
@@ -63,9 +75,6 @@
 #     once first: /certificate/settings/set builtin-trust-store=fetch
 #   * The saved script's Policy (System > Scripts) needs at least:
 #     read, write, test, ftp, sensitive, reboot.
-#     ("sensitive" is for reading secrets back out via $SECRET get - policy
-#     is enforced per the script that's actually running, not the script
-#     that originally defined the function.)
 #
 # USAGE
 #   Paste into a new script (System > Scripts) and run it on a schedule, e.g.:
@@ -80,13 +89,17 @@
 :local ChangelogBaseUrl             "https://download.mikrotik.com/routeros/";
 :local StatusPollAttempts           15;        # max number of 1s polls while waiting on check-for-updates
 
+# -- Backups --
+:local AlwaysBackup                  false;    # false (default) = back up only right before installing
+                                                # true = back up (and upload) on every run, update or not
+:local ExportShowSensitive           false;    # see IMPORTANT notes above before flipping this on
+
 # -- Cloudflare R2 backup (presigned URL via Worker) --
-:local R2PresignWorkerUrl           "[YOUR_URL_HERE]";
+:local R2PresignWorkerUrl           "https://mt-backup.4m52m99knn.workers.dev/presign";
 :local R2RouterSecretName           "R2_BACKUP_SECRET";  # THIS router's own credential, looked up via $SECRET - see setup notes above
 :local PresignTtlHint                120;      # informational only - actual TTL is enforced by the Worker
-:local BackupPasswordName           "";        # leave "" for an unencrypted backup, else a $SECRET name
-:local MaxBackupBytes                60000;    # safety ceiling - see notes above
-:local RequireBackupBeforeUpdate     true;     # if backup/upload fails, skip installing this run
+:local BackupPasswordName           "";        # leave "" for an unencrypted .backup, else a $SECRET name
+:local RequireBackupBeforeUpdate     true;     # if the backup/upload fails, skip installing this run
 :local DeleteLocalBackupAfterUpload  true;
 
 # -- RouterBOARD firmware --
@@ -146,16 +159,99 @@
     :return ([:find $names [:tolower $name]] + 1)
 }
 
-# ---- helper: pull a top-level string field out of a small flat JSON object --
-# Only good for our own Worker's simple {"key":"value",...} responses.
-:local JsonStringField do={
-    :local marker ("\"" . $field . "\":\"")
-    :local start [:find $json $marker]
-    :if ([:typeof $start] = "nil") do={ :return "" }
-    :set start ($start + [:len $marker])
-    :local finish [:find $json "\"" $start]
-    :if ([:typeof $finish] = "nil") do={ :return "" }
-    :return [:pick $json $start $finish]
+# ---- helper: create + upload BOTH a .backup and a .rsc export to R2 ---------
+# Self-contained on purpose (only reads its own named parameters and its own
+# internal locals) so it's safe to call from more than one place in this
+# script - RouterOS closures don't automatically see the calling script's
+# other local variables, only globals and whatever is passed in explicitly.
+# Returns true only if BOTH files uploaded successfully.
+:local DoBackupAndUpload do={
+    # nested helper, only ever called from within this same function body
+    :local ExtractJsonField do={
+        :local marker ("\"" . $field . "\":\"")
+        :local start [:find $json $marker]
+        :if ([:typeof $start] = "nil") do={ :return "" }
+        :set start ($start + [:len $marker])
+        :local finish [:find $json "\"" $start]
+        :if ([:typeof $finish] = "nil") do={ :return "" }
+        :return [:pick $json $start $finish]
+    }
+
+    :local today [/system/clock/get date]
+    :local baseName ($identity . "-" . $today)
+    :local backupFile ($baseName . ".backup")
+    :local rscFile ($baseName . ".rsc")
+
+    :local backupOk false
+    :local rscOk false
+
+    # -------- binary backup --------
+    :do {
+        :if ($backupPassword != "") do={
+            /system/backup/save name=$baseName password=$backupPassword
+        } else={
+            /system/backup/save name=$baseName dont-encrypt=yes
+        }
+
+        :local sz [/file/get [/file/find name=$backupFile] size]
+        :log info ($logPrefix . " " . $backupFile . " is " . $sz . " bytes")
+
+        :local data [/file/get [/file/find name=$backupFile] contents]
+        :if ([:len $data] != $sz) do={ :error ("read " . [:len $data] . " bytes but " . $backupFile . " is " . $sz . " bytes - refusing to upload a short/empty read") }
+
+        :local presignResp ([/tool/fetch url=($workerUrl . "?ext=backup") http-method=get \
+            http-header-field=("X-Router-Auth: " . $identity . ":" . $routerSecret) \
+            check-certificate=yes output=user as-value] -> "data")
+        :local presignUrl [$ExtractJsonField json=$presignResp field="url"]
+        :if ($presignUrl = "") do={ :error ("worker did not return a presigned url for .backup: " . $presignResp) }
+
+        :local putResult [/tool/fetch url=$presignUrl http-method=put http-data=$data \
+            check-certificate=yes output=user-with-headers as-value]
+        :local putHeaders ($putResult -> "data")
+        :if (!($putHeaders ~ "200")) do={ :error (".backup upload did not return HTTP 200: " . $putHeaders) }
+
+        :set backupOk true
+        :log info ($logPrefix . " " . $backupFile . " uploaded to R2.")
+
+        :if ($deleteAfterUpload = true) do={ /file/remove [/file/find name=$backupFile] }
+    } on-error={
+        :log error ($logPrefix . " .backup create/upload failed - see the log line above for detail.")
+    }
+
+    # -------- plain-text config export --------
+    :do {
+        :if ($showSensitive = true) do={
+            /export terse show-sensitive file=$baseName
+        } else={
+            /export terse file=$baseName
+        }
+
+        :local sz [/file/get [/file/find name=$rscFile] size]
+        :log info ($logPrefix . " " . $rscFile . " is " . $sz . " bytes")
+
+        :local data [/file/get [/file/find name=$rscFile] contents]
+        :if ([:len $data] != $sz) do={ :error ("read " . [:len $data] . " bytes but " . $rscFile . " is " . $sz . " bytes - refusing to upload a short/empty read") }
+
+        :local presignResp ([/tool/fetch url=($workerUrl . "?ext=rsc") http-method=get \
+            http-header-field=("X-Router-Auth: " . $identity . ":" . $routerSecret) \
+            check-certificate=yes output=user as-value] -> "data")
+        :local presignUrl [$ExtractJsonField json=$presignResp field="url"]
+        :if ($presignUrl = "") do={ :error ("worker did not return a presigned url for .rsc: " . $presignResp) }
+
+        :local putResult [/tool/fetch url=$presignUrl http-method=put http-data=$data \
+            check-certificate=yes output=user-with-headers as-value]
+        :local putHeaders ($putResult -> "data")
+        :if (!($putHeaders ~ "200")) do={ :error (".rsc upload did not return HTTP 200: " . $putHeaders) }
+
+        :set rscOk true
+        :log info ($logPrefix . " " . $rscFile . " uploaded to R2.")
+
+        :if ($deleteAfterUpload = true) do={ /file/remove [/file/find name=$rscFile] }
+    } on-error={
+        :log error ($logPrefix . " .rsc export/upload failed - see the log line above for detail.")
+    }
+
+    :return ($backupOk && $rscOk)
 }
 
 # ---- make sure the post-update RouterBOARD firmware task exists -------------
@@ -169,6 +265,21 @@
     :if ([:len [/system/scheduler/find name=$RouterboardSchedulerName]] > 0) do={
         /system/scheduler/remove [/system/scheduler/find name=$RouterboardSchedulerName]
         :log info ($LogPrefix . " removed startup task \"" . $RouterboardSchedulerName . "\" (AutoUpgradeRouterboard=no).")
+    }
+}
+
+# ---- routine backup, if configured to happen every run -----------------------
+:local BackupOk false
+:local BackupAttempted false
+:if ($AlwaysBackup = true) do={
+    :set BackupAttempted true
+    :set BackupOk [$DoBackupAndUpload identity=$Identity backupPassword=$BackupPassword \
+        workerUrl=$R2PresignWorkerUrl routerSecret=$R2RouterSecret deleteAfterUpload=$DeleteLocalBackupAfterUpload \
+        logPrefix=$LogPrefix showSensitive=$ExportShowSensitive]
+    :if ($BackupOk = true) do={
+        :log info ($LogPrefix . " routine backup completed.")
+    } else={
+        :log error ($LogPrefix . " routine backup failed - see log lines above. Continuing to check for updates anyway.")
     }
 }
 
@@ -241,50 +352,10 @@
 
         :if ($DaysSinceRelease >= $MinDaysSinceRelease) do={
 
-            # ---- pre-update backup: create it, then upload to R2 via a presigned URL ----
-            :local BackupOk false
-            :local BackupBaseName ($Identity . "-pre-update-" . $LatestVersion)
-            :local BackupFileName ($BackupBaseName . ".backup")
-
-            :do {
-                :if ($BackupPassword != "") do={
-                    /system/backup/save name=$BackupBaseName password=$BackupPassword
-                } else={
-                    /system/backup/save name=$BackupBaseName dont-encrypt=yes
-                }
-
-                :local BackupSize [/file/get [/file/find name=$BackupFileName] size]
-                :log info ($LogPrefix . " backup file " . $BackupFileName . " is " . $BackupSize . " bytes")
-                :if ($BackupSize > $MaxBackupBytes) do={
-                    :error ("backup is " . $BackupSize . " bytes, over the " . $MaxBackupBytes . "-byte ceiling for a variable-based PUT")
-                }
-
-                :local BackupData [/file/get [/file/find name=$BackupFileName] contents]
-
-                # ask the Worker for a one-shot presigned PUT URL - identity and
-                # secret both travel in one header; the Worker verifies them as
-                # a pair against D1 and derives the R2 key from the verified
-                # device_id, not from anything this script asserts
-                :local PresignResp ([/tool/fetch \
-                    url=$R2PresignWorkerUrl \
-                    http-method=get \
-                    http-header-field=("X-Router-Auth: " . $Identity . ":" . $R2RouterSecret) \
-                    check-certificate=yes output=user as-value] -> "data")
-                :local PresignUrl [$JsonStringField json=$PresignResp field="url"]
-                :if ($PresignUrl = "") do={ :error ("worker did not return a presigned url: " . $PresignResp) }
-
-                # upload straight to R2 with the one-shot URL, then confirm it was accepted
-                :local PutResult [/tool/fetch url=$PresignUrl http-method=put http-data=$BackupData \
-                    check-certificate=yes output=user-with-headers as-value]
-                :local PutHeaders ($PutResult -> "data")
-                :if (!($PutHeaders ~ "200")) do={ :error ("R2 did not return HTTP 200: " . $PutHeaders) }
-
-                :set BackupOk true
-                :log info ($LogPrefix . " backup uploaded to R2 successfully.")
-
-                :if ($DeleteLocalBackupAfterUpload = true) do={ /file/remove [/file/find name=$BackupFileName] }
-            } on-error={
-                :log error ($LogPrefix . " backup/upload to R2 failed - see the log line above for detail.")
+            :if ($BackupAttempted = false) do={
+                :set BackupOk [$DoBackupAndUpload identity=$Identity backupPassword=$BackupPassword \
+                    workerUrl=$R2PresignWorkerUrl routerSecret=$R2RouterSecret deleteAfterUpload=$DeleteLocalBackupAfterUpload \
+                    logPrefix=$LogPrefix showSensitive=$ExportShowSensitive]
             }
 
             :local ProceedWithInstall true
