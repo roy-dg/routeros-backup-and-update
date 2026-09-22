@@ -14,7 +14,7 @@
 //   -> 200 { "url": "...", "key": "...", "expiresIn": 120 }
 //   -> 401 if the device is unknown, disabled, or the secret doesn't match
 //   Presigns a PUT for ONE chunk of the file, stored as a temporary part
-//   object under <device_id>/<date>/<base>.<ext>/parts/<part, zero-padded>.
+//   object under parts/<device_id>/<date>/<base>.<ext>/<part, zero-padded>.
 //   Call this once per chunk, right before uploading that chunk - not once
 //   up front for the whole file - so a slow multi-chunk upload can never
 //   outlive PRESIGN_TTL_SECONDS.
@@ -28,8 +28,8 @@
 //   Call once after every chunk from a /presign+PUT round has succeeded.
 //   Streams the part objects back together in order into the final object
 //   at <device_id>/<date>/<base>.<ext>, then best-effort deletes the parts
-//   (an R2 lifecycle rule on the .../parts/ prefix is the backstop for any
-//   left behind by a run that dies before calling this).
+//   (an R2 lifecycle rule on the parts/ prefix is the backstop for any left
+//   behind by a run that dies before calling this).
 //
 //   This is NOT real HTTP Basic auth. RouterOS's /tool fetch user=/password=
 //   params are only confirmed to work for FTP/SFTP - there's a long-standing
@@ -236,8 +236,8 @@ async function handleFinalize(request, env) {
   const pumpDone = pumpPartsInto(env.BUCKET, partKeys, writable);
   await Promise.all([env.BUCKET.put(finalKey, readable), pumpDone]);
 
-  // Best-effort cleanup; an R2 lifecycle rule on the .../parts/ prefix is
-  // the backstop for anything a crashed/interrupted run leaves behind.
+  // Best-effort cleanup; an R2 lifecycle rule on the parts/ prefix is the
+  // backstop for anything a crashed/interrupted run leaves behind.
   await Promise.allSettled(partKeys.map((key) => env.BUCKET.delete(key)));
 
   return new Response(JSON.stringify({ key: finalKey, size: totalSize, parts }), {
@@ -271,8 +271,14 @@ function finalObjectKey(deviceId, base, ext) {
   return `${safeDeviceId}/${today}/${safeBase}.${ext}`;
 }
 
+// Lives under a top-level "parts/" prefix (rather than nested under the
+// final key) specifically so a single R2 lifecycle rule on that prefix can
+// clean up orphaned temp parts without ever matching a final backup object -
+// R2 lifecycle rules match a literal prefix from the start of the key, and
+// device/date vary per router/day, so nesting parts/ under the final key
+// would leave no prefix that matches every part but no final object.
 function partKey(deviceId, base, ext, part) {
-  return `${finalObjectKey(deviceId, base, ext)}/parts/${String(part).padStart(6, "0")}`;
+  return `parts/${finalObjectKey(deviceId, base, ext)}/${String(part).padStart(6, "0")}`;
 }
 
 // -------------------------------------------------------------------------

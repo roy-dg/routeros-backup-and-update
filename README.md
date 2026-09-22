@@ -20,7 +20,9 @@ router-side limits apply:
 2. The Worker looks up `device_id` in D1, checks it isn't disabled, and
    verifies the secret against its stored hash.
 3. It asks R2's S3-compatible API to sign a short-lived `PUT` URL for a
-   temporary part object (`<device_id>/<date>/<base>.<ext>/parts/<n>`).
+   temporary part object (`parts/<device_id>/<date>/<base>.<ext>/<n>` - the
+   `parts/` prefix comes first so a single R2 lifecycle rule can target
+   every temp object without ever matching a final backup).
 4. It returns `{ "url": "...", "key": "...", "expiresIn": 120 }`.
 5. The router `PUT`s that one chunk's bytes straight to that URL, and
    repeats steps 1-5 for every remaining chunk - one presign per chunk,
@@ -34,9 +36,9 @@ router-side limits apply:
 
 R2 never sees the router's secret, and the Worker never sees a chunk's
 contents at PUT time (only when it reassembles them, entirely inside
-Cloudflare). An R2 lifecycle rule on the `.../parts/` prefix (set this up
-once in the dashboard) cleans up any leftover parts from a run that died
-before calling `/finalize`.
+Cloudflare). An R2 lifecycle rule on the `parts/` prefix (see Setup below)
+cleans up any leftover parts from a run that died before calling
+`/finalize`.
 
 A presigned URL can't be revoked early - disabling a router in D1 blocks
 new presigns immediately, but a URL already handed out keeps working until
@@ -98,12 +100,23 @@ wrangler deploy
 sensitive and are fine to commit - just fill in your actual bucket name
 (same bucket as the `R2_BUCKET_NAME` secret) before deploying.
 
-Finally, add an R2 lifecycle rule on your bucket (dashboard: your bucket >
-Settings > Object lifecycle rules) that deletes objects under the
-`parts/` path segment after a day or so. That's the backstop for temporary
-chunk objects left behind by a run that fails before calling `/finalize` -
-harmless either way, since `/finalize` only ever assembles from parts it
-confirms exist, but there's no reason to keep them around.
+Finally, add an R2 lifecycle rule that deletes anything under the `parts/`
+prefix after a day or so - the backstop for temporary chunk objects left
+behind by a run that fails before calling `/finalize` (harmless either way,
+since `/finalize` only ever assembles from parts it confirms exist, but
+there's no reason to keep them around). All temp parts live under that one
+top-level `parts/` prefix specifically so this rule can never match a real
+backup object.
+
+Dashboard: your bucket > Settings > Object lifecycle rules > Add rule -
+scope it to prefix `parts/`, action "Delete object", condition "Age since
+upload" set to e.g. 1 day.
+
+Or via `wrangler`:
+
+```sh
+wrangler r2 bucket lifecycle add mt-backup expire-temp-parts parts/ --expire-days 1
+```
 
 ## Requirements
 
