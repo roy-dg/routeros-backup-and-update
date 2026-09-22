@@ -22,7 +22,7 @@ database_id = "2dcd1287-55a2-4735-808c-94eff65cb64b"
 # secret and, like database_id above, isn't sensitive - fine to commit.
 [[r2_buckets]]
 binding = "BUCKET"
-bucket_name = "[BUCKET NAME HERE]"
+bucket_name = "mt-backup"
 
 # Secrets - ADMIN_SECRET, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
 # R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME - are set with `wrangler secret put
