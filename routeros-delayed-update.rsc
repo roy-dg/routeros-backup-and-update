@@ -90,12 +90,12 @@
 :local StatusPollAttempts           15;        # max number of 1s polls while waiting on check-for-updates
 
 # -- Backups --
-:local AlwaysBackup                  false;    # false (default) = back up only right before installing
+:local AlwaysBackup                  true;    # false (default) = back up only right before installing
                                                 # true = back up (and upload) on every run, update or not
 :local ExportShowSensitive           false;    # see IMPORTANT notes above before flipping this on
 
 # -- Cloudflare R2 backup (presigned URL via Worker) --
-:local R2PresignWorkerUrl           "https://mt-backup.4m52m99knn.workers.dev/presign";
+:local R2PresignWorkerUrl           "[URL HERE]";
 :local R2RouterSecretName           "R2_BACKUP_SECRET";  # THIS router's own credential, looked up via $SECRET - see setup notes above
 :local PresignTtlHint                120;      # informational only - actual TTL is enforced by the Worker
 :local BackupPasswordName           "";        # leave "" for an unencrypted .backup, else a $SECRET name
@@ -205,10 +205,11 @@
         :local presignUrl [$ExtractJsonField json=$presignResp field="url"]
         :if ($presignUrl = "") do={ :error ("worker did not return a presigned url for .backup: " . $presignResp) }
 
-        :local putResult [/tool/fetch url=$presignUrl http-method=put http-data=$data \
-            check-certificate=yes output=user-with-headers as-value]
-        :local putHeaders ($putResult -> "data")
-        :if (!($putHeaders ~ "200")) do={ :error (".backup upload did not return HTTP 200: " . $putHeaders) }
+        :local putResult [/tool/fetch url=$presignUrl http-method=put http-data=$data check-certificate=yes output=user as-value]
+        :local putStatus ($putResult -> "status")
+        :local putBody ($putResult -> "data")
+        :if ($putStatus != "finished") do={ :error (".backup upload did not complete, status=" . $putStatus) }
+        :if ([:len $putBody] > 0) do={ :error (".backup upload rejected by R2: " . $putBody) }
 
         :set backupOk true
         :log info ($logPrefix . " " . $backupFile . " uploaded to R2.")
@@ -238,10 +239,11 @@
         :local presignUrl [$ExtractJsonField json=$presignResp field="url"]
         :if ($presignUrl = "") do={ :error ("worker did not return a presigned url for .rsc: " . $presignResp) }
 
-        :local putResult [/tool/fetch url=$presignUrl http-method=put http-data=$data \
-            check-certificate=yes output=user-with-headers as-value]
-        :local putHeaders ($putResult -> "data")
-        :if (!($putHeaders ~ "200")) do={ :error (".rsc upload did not return HTTP 200: " . $putHeaders) }
+        :local putResult [/tool/fetch url=$presignUrl http-method=put http-data=$data check-certificate=yes output=user as-value]
+        :local putStatus ($putResult -> "status")
+        :local putBody ($putResult -> "data")
+        :if ($putStatus != "finished") do={ :error (".rsc upload did not complete, status=" . $putStatus) }
+        :if ([:len $putBody] > 0) do={ :error (".rsc upload rejected by R2: " . $putBody) }
 
         :set rscOk true
         :log info ($logPrefix . " " . $rscFile . " uploaded to R2.")
