@@ -91,10 +91,50 @@ Cloudflare - see `.wranglerignore` - but kept here for version control):
 - `secret-vault.rsc` - defines a `$SECRET` helper that keeps credentials
   out of script text and off-router backups. Deploy and schedule this
   first; see its header for setup.
-- `routeros-delayed-update.rsc` - checks for a RouterOS update, waits for
-  it to have been publicly available for a configurable number of days,
-  takes a pre-update backup and uploads it via this Worker's presigned URL,
-  installs the update, and upgrades RouterBOARD firmware if needed.
+- `routeros-delayed-update.rsc` - the delayed-update-with-backup logic
+  described below.
+
+### What `routeros-delayed-update.rsc` does
+
+Run it on a schedule (e.g. once a day, via RouterOS's own scheduler). Each
+run:
+
+1. **Checks for a RouterOS update** on the configured channel
+   (`stable` by default).
+2. **Delays installing it** until the release has been publicly available
+   for at least `$MinDaysSinceRelease` days (30 by default) - release age
+   is read from MikroTik's own CHANGELOG file, since RouterOS itself
+   doesn't expose a release date. If the changelog can't be fetched or
+   parsed, the script fails safe and skips installing that run rather than
+   guessing.
+3. **Takes a backup before doing anything else.** Once a release clears the
+   age threshold, the router creates a local backup, reads it into a
+   variable, and uploads it straight to Cloudflare R2 using a short-lived
+   presigned PUT URL obtained from this repo's Worker (see "How it works"
+   above). By default (`RequireBackupBeforeUpdate=true`), the update is
+   skipped for that run if the backup or upload fails - the router only
+   updates once a good backup is confirmed on R2.
+4. **Installs the update.** `/system/package/update/install` reboots the
+   router automatically once the download finishes.
+5. **Upgrades RouterBOARD firmware after reboot, if needed.** The script
+   self-provisions a `start-time=startup` scheduler task that checks for a
+   pending RouterBOARD firmware upgrade and reboots once more to apply it.
+
+**Authentication**: each router authenticates to the Worker as
+`X-Router-Auth: <device_id>:<secret>` - the router's identity
+(`/system/identity`) paired with a per-router secret. The Worker checks
+that pair against D1 before signing anything, so a compromised router can
+be revoked individually (see Admin API above) without affecting others or
+rotating anything shared.
+
+**Where secrets live**: nothing sensitive is hardcoded in the script.
+- On the **router**, this router's own R2 credential (and, optionally, a
+  backup-encryption password) live in the `$SECRET` vault provided by
+  `secret-vault.rsc`, not in script text.
+- On **Cloudflare**, the Worker's own secrets (`ADMIN_SECRET`,
+  R2 account id/access key/secret key/bucket name) are `wrangler secret`
+  env vars - see Setup above. The router never sees these; it only ever
+  gets a presigned URL back.
 
 Each router needs its own credential registered with the Worker (see
 Admin API above) before it can back anything up; the registered
