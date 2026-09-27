@@ -400,8 +400,21 @@
         # Sanity-check before doing date maths: a misparse that looks "old" would
         # trigger an immediate install, which is exactly what this script exists
         # to avoid. Erroring here keeps the on-error fail-safe in charge.
-        :if (([:typeof $RelYear] != "num") || ([:typeof $RelMonth] != "num") || ([:typeof $RelDay] != "num") || \
-             ($RelYear < 2000) || ($RelMonth < 1) || ($RelMonth > 12) || ($RelDay < 1) || ($RelDay > 31)) do={
+        # Deliberately written as short single-line :if statements with no line
+        # continuations - this script gets pasted into Winbox/terminals that
+        # hard-wrap long lines, which silently breaks a "\"-continued expression.
+        :local DateOk true
+        :if ([:typeof $RelYear] != "num") do={ :set DateOk false }
+        :if ([:typeof $RelMonth] != "num") do={ :set DateOk false }
+        :if ([:typeof $RelDay] != "num") do={ :set DateOk false }
+        :if ($DateOk = true) do={
+            :if ($RelYear < 2000) do={ :set DateOk false }
+            :if ($RelMonth < 1) do={ :set DateOk false }
+            :if ($RelMonth > 12) do={ :set DateOk false }
+            :if ($RelDay < 1) do={ :set DateOk false }
+            :if ($RelDay > 31) do={ :set DateOk false }
+        }
+        :if ($DateOk = false) do={
             :error ("implausible release date \"" . $RelStr . "\"")
         }
 
