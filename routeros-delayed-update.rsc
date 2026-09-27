@@ -162,9 +162,23 @@
 }
 
 # ---- helper: 3-letter month abbreviation (any case) -> 1-12 -----------------
+# Accepts either a three-letter abbreviation ("Feb", as the RouterOS clock and
+# older CHANGELOG headers use) or an already-numeric month ("09", as CHANGELOG
+# headers use since 2026). Errors out on anything else so callers wrapped in
+# :do/on-error keep their fail-safe behaviour instead of computing a bogus date.
 :local MonthAbbrevToNum do={
     :local names {"jan";"feb";"mar";"apr";"may";"jun";"jul";"aug";"sep";"oct";"nov";"dec"}
-    :return ([:find $names [:tolower $name]] + 1)
+    :local idx [:find $names [:tolower $name]]
+    :if ([:typeof $idx] = "num") do={ :return ($idx + 1) }
+
+    # numeric form: drop a leading zero so only plain decimal digits reach :tonum
+    :local digits $name
+    :if ([:pick $digits 0 1] = "0") do={ :set digits [:pick $digits 1 [:len $digits]] }
+    :local num [:tonum $digits]
+    :if ([:typeof $num] != "num") do={
+        :error ("unrecognised month \"" . $name . "\"")
+    }
+    :return $num
 }
 
 # ---- helper: create + upload BOTH a .backup and a .rsc export to R2 ---------
@@ -367,14 +381,29 @@
         :local ChangelogUrl ($ChangelogBaseUrl . $LatestVersion . "/CHANGELOG")
         :local ChangelogText ([/tool/fetch url=$ChangelogUrl check-certificate=yes output=user as-value] -> "data")
 
-        # First line looks like: What's new in 7.18.1 (2025-Feb-28 13:31):
+        # First line is one of:
+        #   What's new in 7.18.1 (2025-Feb-28 13:31):   <- up to ~2026
+        #   What's new in 7.24.4 (2026-09-16):          <- current
+        # so locate the two dashes rather than assuming fixed offsets, and let
+        # MonthAbbrevToNum handle "Feb" or "09".
         :local OpenParen  [:find $ChangelogText "("]
         :local CloseParen [:find $ChangelogText ")"]
         :local RelStr     [:pick $ChangelogText ($OpenParen + 1) $CloseParen]
 
-        :local RelYear  [:tonum [:pick $RelStr 0 4]]
-        :local RelMonth [$MonthAbbrevToNum name=[:pick $RelStr 5 8]]
-        :local RelDay   [:tonum [:pick $RelStr 9 11]]
+        :local Dash1 [:find $RelStr "-"]
+        :local Dash2 [:find $RelStr "-" ($Dash1 + 1)]
+
+        :local RelYear  [:tonum [:pick $RelStr 0 $Dash1]]
+        :local RelMonth [$MonthAbbrevToNum name=[:pick $RelStr ($Dash1 + 1) $Dash2]]
+        :local RelDay   [:tonum [:pick $RelStr ($Dash2 + 1) ($Dash2 + 3)]]
+
+        # Sanity-check before doing date maths: a misparse that looks "old" would
+        # trigger an immediate install, which is exactly what this script exists
+        # to avoid. Erroring here keeps the on-error fail-safe in charge.
+        :if (([:typeof $RelYear] != "num") || ([:typeof $RelMonth] != "num") || ([:typeof $RelDay] != "num") || \
+             ($RelYear < 2000) || ($RelMonth < 1) || ($RelMonth > 12) || ($RelDay < 1) || ($RelDay > 31)) do={
+            :error ("implausible release date \"" . $RelStr . "\"")
+        }
 
         :local ReleaseEpochDay [$DaysFromCivil year=$RelYear month=$RelMonth day=$RelDay]
         :set DaysSinceRelease ($TodayEpochDay - $ReleaseEpochDay)
