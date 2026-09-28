@@ -167,8 +167,15 @@
 # headers use since 2026). Errors out on anything else so callers wrapped in
 # :do/on-error keep their fail-safe behaviour instead of computing a bogus date.
 :local MonthAbbrevToNum do={
-    :local names {"jan";"feb";"mar";"apr";"may";"jun";"jul";"aug";"sep";"oct";"nov";"dec"}
-    :local idx [:find $names [:tolower $name]]
+    # RouterOS scripting has no :tolower (it errors with "bad command name
+    # tolower"), so match against each casing MikroTik actually uses rather
+    # than normalising the input.
+    :local lower {"jan";"feb";"mar";"apr";"may";"jun";"jul";"aug";"sep";"oct";"nov";"dec"}
+    :local title {"Jan";"Feb";"Mar";"Apr";"May";"Jun";"Jul";"Aug";"Sep";"Oct";"Nov";"Dec"}
+    :local upper {"JAN";"FEB";"MAR";"APR";"MAY";"JUN";"JUL";"AUG";"SEP";"OCT";"NOV";"DEC"}
+    :local idx [:find $lower $name]
+    :if ([:typeof $idx] != "num") do={ :set idx [:find $title $name] }
+    :if ([:typeof $idx] != "num") do={ :set idx [:find $upper $name] }
     :if ([:typeof $idx] = "num") do={ :return ($idx + 1) }
 
     # numeric form: drop a leading zero so only plain decimal digits reach :tonum
@@ -379,7 +386,12 @@
 
     :do {
         :local ChangelogUrl ($ChangelogBaseUrl . $LatestVersion . "/CHANGELOG")
-        :local ChangelogText ([/tool/fetch url=$ChangelogUrl check-certificate=yes output=user as-value] -> "data")
+        # mode=https is REQUIRED here. Without it this fetch fails with
+        # "Couldn't start task: Mode not specified" - fetch does not always
+        # infer the transport from the URL scheme (the backup fetches below
+        # get away with it because they pass an explicit http-method).
+        :local Fetched [/tool/fetch url=$ChangelogUrl mode=https check-certificate=yes output=user as-value]
+        :local ChangelogText ($Fetched -> "data")
 
         # First line is one of:
         #   What's new in 7.18.1 (2025-Feb-28 13:31):   <- up to ~2026
