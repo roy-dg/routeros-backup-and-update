@@ -78,7 +78,10 @@
 #   * For real certificate validation on the fetch calls below, run this
 #     once first: /certificate/settings/set builtin-trust-store=fetch
 #   * The saved script's Policy (System > Scripts) needs at least:
-#     read, write, test, ftp, sensitive, reboot.
+#     read, write, test, ftp, sensitive, reboot, policy.
+#     "policy" is for the /system script run secret-vault call below; drop
+#     it if your RouterOS permits that call under read alone. The call needs
+#     a script named exactly "secret-vault" on the router.
 #
 # USAGE
 #   Paste into a new script (System > Scripts) and run it on a schedule, e.g.:
@@ -118,8 +121,18 @@
 :local Identity [/system/identity/get name]
 
 # ---- wait for the shared secret vault (see secret-vault.rsc) ----------------
+# On a CHR this script also runs at boot, so it races secret-vault's own
+# start-time=startup entry. Waiting alone only makes the ordering probable,
+# so run the vault ourselves when it is not already up: a no-op if it is,
+# and a definition if it is not. The wait loop below stays as a fallback for
+# the case where secret-vault is already mid-execution from its own entry.
 :global SecretVaultReady
 :global SECRET
+:if ($SecretVaultReady != true) do={
+    :do { /system script run secret-vault } on-error={
+        :log warning ($LogPrefix . " could not run secret-vault directly, falling back to waiting for it.")
+    }
+}
 :local VaultWait 0
 :while ($SecretVaultReady != true && $VaultWait < 20) do={
     :delay 500ms
