@@ -374,13 +374,21 @@
 }
 
 # ---- make sure the post-update RouterBOARD firmware task exists -------------
-# A CHR (or any x86 build) has no RouterBOARD, so /system/routerboard does not
-# exist there and the generated on-event fails to parse at fire time with
-# "syntax error (line 1 column 26)" - column 26 being the "/" before "get" in
-# /system/routerboard/get. Probe for the menu rather than testing board-name
-# against "CHR", so this covers every non-RouterBOARD target.
-:local HasRouterboard false
-:do { :set HasRouterboard [/system/routerboard/get routerboard] } on-error={ :set HasRouterboard false }
+# A CHR (or x86 build) has no RouterBOARD, so /system/routerboard does not
+# exist there and the generated on-event fails when the scheduler fires it:
+# "syntax error (line 1 column 26)", column 26 being the "/" before "get" in
+# /system/routerboard/get.
+#
+# That failure is at PARSE time, not run time, so it cannot be caught with
+# :do {...} on-error={...} - an earlier attempt to probe the menu that way
+# made this whole script fail to parse on a CHR, taking everything with it.
+# The platform has to be identified without naming the menu at all, hence
+# board-name. The reference inside $RbScript below is fine because it sits in
+# a quoted string, which is why the broken task was created successfully and
+# only failed once fired.
+:local BoardName [/system/resource/get board-name]
+:local HasRouterboard true
+:if ($BoardName = "CHR" || $BoardName = "x86") do={ :set HasRouterboard false }
 
 :if ($AutoUpgradeRouterboard = true && $HasRouterboard = true) do={
     :if ([:len [/system/scheduler/find name=$RouterboardSchedulerName]] = 0) do={
