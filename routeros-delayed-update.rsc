@@ -95,6 +95,8 @@
 :local LogPrefix                    "DelayedUpdate:";
 :local ChangelogBaseUrl             "https://download.mikrotik.com/routeros/";
 :local StatusPollAttempts           15;        # max number of 1s polls while waiting on check-for-updates
+:local LinkWaitAttempts             12;        # max probes for internet connectivity before giving up (see note below)
+:local LinkWaitDelay                5s;        # delay between those probes - 12 x 5s = up to a minute
 
 # -- Backups --
 :local AlwaysBackup                  true;    # false (default) = back up only right before installing
@@ -166,6 +168,35 @@
     :log error ($LogPrefix . " R2WorkerBaseUrl is not set to an https:// Worker URL (currently \"" . $R2WorkerBaseUrl . "\") - edit it at the top of this script.")
     :error ($LogPrefix . " aborting: R2WorkerBaseUrl not configured.")
 }
+
+# ---- wait for the internet link before any network action -------------------
+# On a CHR this script also runs at boot, where the link is not up yet. The
+# first network action is the R2 upload inside $DoBackupAndUpload (reached via
+# AlwaysBackup below), not check-for-updates, so the gate has to sit here -
+# ahead of everything - or a boot-time run fails mid-upload having already
+# written a backup to disk.
+#
+# Bounded, unlike cf-push-ip's indefinite retry: this script also runs on a
+# daily schedule and reboots the router after installing, so a skipped run
+# costs nothing and is far better than an instance hung at boot. On the daily
+# path the link is already up and the probe succeeds first time, costing one
+# fetch. Probes the changelog host because that is a real dependency of this
+# script, so a success means the host it actually needs is reachable.
+:local LinkOk false
+:local LinkAttempt 0
+:while ($LinkOk = false && $LinkAttempt < $LinkWaitAttempts) do={
+    :set LinkAttempt ($LinkAttempt + 1)
+    :do {
+        :local LinkProbe [/tool/fetch url=$ChangelogBaseUrl mode=https check-certificate=yes output=user as-value]
+        :if (($LinkProbe->"status") = "finished") do={ :set LinkOk true }
+    } on-error={}
+    :if ($LinkOk = false && $LinkAttempt < $LinkWaitAttempts) do={ :delay $LinkWaitDelay }
+}
+:if ($LinkOk = false) do={
+    :log error ($LogPrefix . " no internet connectivity after " . $LinkAttempt . " probe(s) of " . $ChangelogBaseUrl . " - skipping this run, the next scheduled run will retry.")
+    :error ($LogPrefix . " aborting: no internet connectivity.")
+}
+:log info ($LogPrefix . " internet is up (after " . $LinkAttempt . " probe(s)).")
 
 # ---- helper: days since 1970-01-01 for a given civil y/m/d ------------------
 # Well-known "days_from_civil" algorithm (Howard Hinnant, public domain) -
