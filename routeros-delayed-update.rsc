@@ -366,16 +366,32 @@
 }
 
 # ---- make sure the post-update RouterBOARD firmware task exists -------------
-:if ($AutoUpgradeRouterboard = true) do={
+# A CHR (or any x86 build) has no RouterBOARD, so /system/routerboard does not
+# exist there and the generated on-event fails to parse at fire time with
+# "syntax error (line 1 column 26)" - column 26 being the "/" before "get" in
+# /system/routerboard/get. Probe for the menu rather than testing board-name
+# against "CHR", so this covers every non-RouterBOARD target.
+:local HasRouterboard false
+:do { :set HasRouterboard [/system/routerboard/get routerboard] } on-error={ :set HasRouterboard false }
+
+:if ($AutoUpgradeRouterboard = true && $HasRouterboard = true) do={
     :if ([:len [/system/scheduler/find name=$RouterboardSchedulerName]] = 0) do={
         :local RbScript (":if ([/system/routerboard/get current-firmware] != [/system/routerboard/get upgrade-firmware]) do={" . " :log info \"" . $RouterboardSchedulerName . ": new RouterBOARD firmware available, upgrading and rebooting.\";" . " /system/routerboard/upgrade; :delay 3s; /system/reboot" . "} else={ :log info \"" . $RouterboardSchedulerName . ": RouterBOARD firmware already up to date.\" }")
         /system/scheduler/add name=$RouterboardSchedulerName start-time=startup on-event=$RbScript
         :log info ($LogPrefix . " created startup task \"" . $RouterboardSchedulerName . "\" for RouterBOARD firmware upgrades.")
     }
 } else={
+    # Remove the task whenever it should not exist - the flag is off, OR this
+    # platform has no RouterBOARD. The second case matters: on a CHR the flag
+    # is true by default, so keying the removal on the flag alone would leave
+    # an unparseable startup task on the router failing at every boot.
     :if ([:len [/system/scheduler/find name=$RouterboardSchedulerName]] > 0) do={
         /system/scheduler/remove [/system/scheduler/find name=$RouterboardSchedulerName]
-        :log info ($LogPrefix . " removed startup task \"" . $RouterboardSchedulerName . "\" (AutoUpgradeRouterboard=no).")
+        :if ($HasRouterboard = false) do={
+            :log info ($LogPrefix . " removed startup task \"" . $RouterboardSchedulerName . "\" (no RouterBOARD on this platform).")
+        } else={
+            :log info ($LogPrefix . " removed startup task \"" . $RouterboardSchedulerName . "\" (AutoUpgradeRouterboard=no).")
+        }
     }
 }
 
