@@ -144,6 +144,16 @@
 }
 :if ($SecretsOk = false) do={ :error ($LogPrefix . " aborting: secrets not configured yet.") }
 
+# ---- sanity-check the Worker URL before taking a backup we can't upload ----
+# /tool/fetch infers http vs https from the url's scheme; if R2WorkerBaseUrl is
+# still the placeholder (or has no scheme) it fails with the opaque "couldn't
+# start task: mode not specified" - and only once the backup has already been
+# written. Catch it here instead.
+:if ([:len $R2WorkerBaseUrl] < 9 || [:pick $R2WorkerBaseUrl 0 8] != "https://") do={
+    :log error ($LogPrefix . " R2WorkerBaseUrl is not set to an https:// Worker URL (currently \"" . $R2WorkerBaseUrl . "\") - edit it at the top of this script.")
+    :error ($LogPrefix . " aborting: R2WorkerBaseUrl not configured.")
+}
+
 # ---- helper: days since 1970-01-01 for a given civil y/m/d ------------------
 # Well-known "days_from_civil" algorithm (Howard Hinnant, public domain) -
 # avoids needing a leap-year lookup table. Verified against 1970-01-01 -> 0.

@@ -40,7 +40,7 @@
 #        /system script run secret-vault
 #   4. Seed secrets from the terminal (runs under your own admin permissions,
 #      not this script's policy), e.g.:
-#        $SECRET "set" "R2_SHARED_SECRET" password="..."
+#        $SECRET "set" "R2_BACKUP_SECRET" password="..."
 #
 # Any OTHER script that calls $SECRET "get"/"set"/"remove" needs "sensitive"
 # (and "write" for set/remove) in its own Policy - policy is enforced per the
