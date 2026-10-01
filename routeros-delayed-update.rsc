@@ -97,6 +97,7 @@
 :local StatusPollAttempts           15;        # max number of 1s polls while waiting on check-for-updates
 :local LinkWaitAttempts             12;        # max probes for internet connectivity before giving up (see note below)
 :local LinkWaitDelay                5s;        # delay between those probes - 12 x 5s = up to a minute
+:local LinkProbeUrl                 "https://api.ipify.org";  # must return HTTP 200 - /tool/fetch treats any non-2xx as an error
 
 # -- Backups --
 :local AlwaysBackup                  true;    # false (default) = back up only right before installing
@@ -180,20 +181,27 @@
 # daily schedule and reboots the router after installing, so a skipped run
 # costs nothing and is far better than an instance hung at boot. On the daily
 # path the link is already up and the probe succeeds first time, costing one
-# fetch. Probes the changelog host because that is a real dependency of this
-# script, so a success means the host it actually needs is reachable.
+# fetch.
+#
+# $LinkProbeUrl must return HTTP 200: /tool/fetch treats any non-2xx as an
+# error, so a URL that 403s or 404s reads as "no internet" on a perfectly
+# good link. Do NOT point it at $ChangelogBaseUrl - that is a directory
+# listing and returns 403 Forbidden, which is what it was doing before. It is
+# also deliberately not a download.mikrotik.com URL at all: the backup only
+# needs the R2 Worker, so a MikroTik-side outage must not be able to stop a
+# backup from being taken and uploaded.
 :local LinkOk false
 :local LinkAttempt 0
 :while ($LinkOk = false && $LinkAttempt < $LinkWaitAttempts) do={
     :set LinkAttempt ($LinkAttempt + 1)
     :do {
-        :local LinkProbe [/tool/fetch url=$ChangelogBaseUrl mode=https check-certificate=yes output=user as-value]
+        :local LinkProbe [/tool/fetch url=$LinkProbeUrl mode=https check-certificate=yes output=user as-value]
         :if (($LinkProbe->"status") = "finished") do={ :set LinkOk true }
     } on-error={}
     :if ($LinkOk = false && $LinkAttempt < $LinkWaitAttempts) do={ :delay $LinkWaitDelay }
 }
 :if ($LinkOk = false) do={
-    :log error ($LogPrefix . " no internet connectivity after " . $LinkAttempt . " probe(s) of " . $ChangelogBaseUrl . " - skipping this run, the next scheduled run will retry.")
+    :log error ($LogPrefix . " no internet connectivity after " . $LinkAttempt . " probe(s) of " . $LinkProbeUrl . " - skipping this run, the next scheduled run will retry.")
     :error ($LogPrefix . " aborting: no internet connectivity.")
 }
 :log info ($LogPrefix . " internet is up (after " . $LinkAttempt . " probe(s)).")
